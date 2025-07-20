@@ -1,6 +1,14 @@
 import functions from '@google-cloud/functions-framework';
 import Joi from 'joi';
 
+// CORS configuration
+const setCorsHeaders = (res) => {
+  res.set('Access-Control-Allow-Origin', '*');
+  res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.set('Access-Control-Max-Age', '3600');
+};
+
 // Validation schemas
 const schemas = {
   firstName: Joi.string()
