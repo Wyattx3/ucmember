@@ -22,3 +22,68 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Local Netlify folder
+.netlify
+
+# Production Environment Files (Never commit these!)
+.env.production
+.env.production.local
+.env.staging
+.env.staging.local
+
+# Development Environment Files (Optional - can be committed with safe defaults)
+.env.development
+.env.development.local
+
+# Local Environment Files
+.env
+.env.local
+
+# API Keys and Secrets (Never commit these!)
+**/api-keys.json
+**/service-account.json
+**/firebase-adminsdk*.json
+**/*-key.json
+email-service-key.json
+
+# Build and Deployment
+build/
+dist/
+coverage/
+.nyc_output/
+
+# Firebase
+.firebase/
+firebase-debug.log
+firestore-debug.log
+
+# Google Cloud
+.gcloud/
+gcp-key.json
+
+# Temporary files
+.temp/
+.tmp/
+*.tmp
+*.temp
+
+# OS generated files
+Thumbs.db
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+
+# Backup files
+*.backup
+*.bak
+*.swp
+*.swo
+
+# Production deployment artifacts
+deploy-logs/
+deployment-config/
+production-config/

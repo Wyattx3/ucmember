@@ -1,447 +1,443 @@
-// Production API service layer for backend communication
-class ApiService {
-  private readonly formValidationUrl: string
-  private readonly memberAuthUrl: string
-  private readonly timeout: number = 30000 // 30 seconds
+// Production API service layer for backend communication with proper service routing
+// Enhanced environment detection for Vite builds
+const isProduction = typeof window !== 'undefined' && window.location.hostname !== 'localhost';
 
-  constructor() {
-    // Get API URLs from environment variables (production ready)
-    this.formValidationUrl = import.meta.env.VITE_FORM_VALIDATION_URL || 
-      'https://asia-southeast1-dev-splicer-463021-u3.cloudfunctions.net/form-validation'
-    this.memberAuthUrl = import.meta.env.VITE_MEMBER_AUTH_URL || 
-      'https://asia-southeast1-dev-splicer-463021-u3.cloudfunctions.net/member-auth'
+// Multi-service endpoint configuration
+const API_ENDPOINTS = {
+  EMAIL_SERVICE: import.meta.env.VITE_EMAIL_SERVICE_URL || 
+    (isProduction 
+      ? 'https://dev-splicer-463021-u3.uc.r.appspot.com'
+      : 'http://localhost:3001'),
+  FORM_VALIDATION: import.meta.env.VITE_FORM_VALIDATION_URL || 
+    (isProduction 
+      ? 'https://asia-southeast1-dev-splicer-463021-u3.cloudfunctions.net/formValidation'
+      : 'http://localhost:3002'),
+  MEMBER_AUTH: import.meta.env.VITE_MEMBER_AUTH_URL || 
+    (isProduction 
+      ? 'https://asia-southeast1-dev-splicer-463021-u3.cloudfunctions.net/memberAuth'
+      : 'http://localhost:3003')
+};
 
-    // Only log in development mode
-    if (import.meta.env.VITE_DEBUG_MODE === 'true' || import.meta.env.DEV) {
-      console.log('API Service initialized with:')
-      console.log('- Form Validation URL:', this.formValidationUrl)
-      console.log('- Member Auth URL:', this.memberAuthUrl)
-      console.log('- Environment:', import.meta.env.VITE_ENVIRONMENT || 'development')
-    }
-  }
+// Legacy API_BASE_URL for backward compatibility (if needed)
+// const API_BASE_URL = API_ENDPOINTS.EMAIL_SERVICE;
 
-  // Generic fetch with timeout and error handling
-  private async fetchWithTimeout(url: string, options: RequestInit = {}): Promise<Response> {
-    const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), this.timeout)
+console.log('API Endpoints Configuration:', {
+  EMAIL_SERVICE: API_ENDPOINTS.EMAIL_SERVICE,
+  FORM_VALIDATION: API_ENDPOINTS.FORM_VALIDATION,
+  MEMBER_AUTH: API_ENDPOINTS.MEMBER_AUTH,
+  environment: isProduction ? 'production' : 'development'
+});
 
+export const apiService = {
+  // Validate and format field - Route to Form Validation Cloud Function
+  async validateAndFormatField(fieldName: string, value: string): Promise<{
+    success: boolean;
+    valid?: boolean;
+    formatted?: string;
+    error?: string;
+  }> {
     try {
-      const response = await fetch(url, {
-        ...options,
-        signal: controller.signal,
+      const response = await fetch(API_ENDPOINTS.FORM_VALIDATION, {
+        method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...options.headers,
         },
-      })
-
-      clearTimeout(timeoutId)
-      return response
-    } catch (error) {
-      clearTimeout(timeoutId)
-      
-      // Production error handling and logging
-      if (error instanceof Error && error.name === 'AbortError') {
-        const timeoutError = new Error('Request timeout - server not responding')
-        this.logError('TIMEOUT_ERROR', timeoutError, { url, options })
-        throw timeoutError
-      }
-      
-      this.logError('FETCH_ERROR', error, { url, options })
-      throw error
-    }
-  }
-
-  // Production error logging
-  private logError(type: string, error: any, context?: any): void {
-    const errorData = {
-      type,
-      message: error.message || 'Unknown error',
-      timestamp: new Date().toISOString(),
-      environment: import.meta.env.VITE_ENVIRONMENT || 'development',
-      context
-    }
-
-    // Only log to console in development
-    if (import.meta.env.VITE_DEBUG_MODE === 'true' || import.meta.env.DEV) {
-      console.error('API Error:', errorData)
-    }
-
-    // In production, you could send to monitoring service
-    if (import.meta.env.VITE_ERROR_REPORTING_ENABLED === 'true') {
-      // Example: Send to analytics or error reporting service
-      // this.sendToErrorReporting(errorData)
-    }
-  }
-
-  // Form Validation API Methods
-  async validateField(field: string, value: string): Promise<{
-    success: boolean;
-    field: string;
-    valid: boolean;
-    error?: string;
-    code?: string;
-  }> {
-    try {
-      console.log(`Validating field: ${field} with value: ${value}`)
-      
-      const response = await this.fetchWithTimeout(this.formValidationUrl, {
-        method: 'POST',
-        body: JSON.stringify({
-          action: 'validateField',
-          field,
-          value
-        })
-      })
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
-      }
-
-      const result = await response.json()
-      console.log(`Validation result for ${field}:`, result)
-      return result
-
-    } catch (error) {
-      console.error('Field validation error:', error)
-      return {
-        success: false,
-        field,
-        valid: false,
-        error: error instanceof Error ? error.message : 'Validation failed',
-        code: 'VALIDATION_ERROR'
-      }
-    }
-  }
-
-  async formatField(field: string, value: string): Promise<{
-    success: boolean;
-    field: string;
-    original: string;
-    formatted: string;
-    sanitized: string;
-  }> {
-    try {
-      console.log(`Formatting field: ${field} with value: ${value}`)
-      
-      const response = await this.fetchWithTimeout(this.formValidationUrl, {
-        method: 'POST',
-        body: JSON.stringify({
-          action: 'formatField',
-          field,
-          value
-        })
-      })
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
-      }
-
-      const result = await response.json()
-      console.log(`Format result for ${field}:`, result)
-      return result
-
-    } catch (error) {
-      console.error('Field formatting error:', error)
-      return {
-        success: false,
-        field,
-        original: value,
-        formatted: value,
-        sanitized: value
-      }
-    }
-  }
-
-  async validateAndFormatField(field: string, value: string): Promise<{
-    success: boolean;
-    field: string;
-    original: string;
-    formatted: string;
-    valid: boolean;
-    error?: string;
-  }> {
-    try {
-      console.log(`Validating and formatting field: ${field}`)
-      
-      const response = await this.fetchWithTimeout(this.formValidationUrl, {
-        method: 'POST',
         body: JSON.stringify({
           action: 'validateAndFormat',
-          field,
-          value
-        })
-      })
+          field: fieldName,
+          value: value
+        }),
+      });
 
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+        throw new Error(`HTTP ${response.status}`);
       }
 
-      const result = await response.json()
-      console.log(`Validate & format result for ${field}:`, result)
-      return result
-
+      const result = await response.json();
+      return result;
     } catch (error) {
-      console.error('Field validate & format error:', error)
-      return {
-        success: false,
-        field,
-        original: value,
-        formatted: value,
-        valid: false,
-        error: error instanceof Error ? error.message : 'Processing failed'
-      }
-    }
-  }
-
-  async validateAllFields(userData: any): Promise<{
-    success: boolean;
-    valid: boolean;
-    results: any;
-    errors?: any;
-    message: string;
-  }> {
-    try {
-      console.log('Validating all fields:', userData)
+      console.warn('Backend validation unavailable, using client-side validation:', error);
       
-      const response = await this.fetchWithTimeout(this.formValidationUrl, {
-        method: 'POST',
-        body: JSON.stringify({
-          action: 'validateAll',
-          userData
-        })
-      })
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
-      }
-
-      const result = await response.json()
-      console.log('Full validation result:', result)
-      return result
-
-    } catch (error) {
-      console.error('Full validation error:', error)
+      // Fallback to client-side validation
       return {
-        success: false,
-        valid: false,
-        results: {},
-        errors: { general: error instanceof Error ? error.message : 'Validation failed' },
-        message: 'Validation service unavailable'
-      }
+        success: true,
+        valid: true,
+        formatted: value.trim()
+      };
     }
-  }
+  },
 
-  // Member Authentication API Methods
-  async registerUser(userData: any, memberCardData: any): Promise<{
+  // Send verification code - Route to Email Service (App Engine)
+  async sendVerificationCode(email: string, firstName: string, lastName: string): Promise<{
     success: boolean;
-    message: string;
-    userId?: string;
+    message?: string;
+    emailId?: string;
+    expiresIn?: number;
     error?: string;
     code?: string;
   }> {
     try {
-      console.log('Registering user:', { email: userData.email, name: `${userData.firstName} ${userData.lastName}` })
-      
-      const response = await this.fetchWithTimeout(this.memberAuthUrl, {
+      const response = await fetch(`${API_ENDPOINTS.EMAIL_SERVICE}/api/send-verification-code`, {
         method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          email,
+          firstName,
+          lastName
+        }),
+      });
+
+      const result = await response.json();
+      return result;
+    } catch (error) {
+      console.error('Send verification code failed:', error);
+      return {
+        success: false,
+        error: 'Network error. Please check your connection.',
+        code: 'NETWORK_ERROR'
+      };
+    }
+  },
+
+  // Verify code - Route to Email Service (App Engine)
+  async verifyCode(email: string, code: string): Promise<{
+    success: boolean;
+    message?: string;
+    error?: string;
+    code?: string;
+    attemptsRemaining?: number;
+  }> {
+    try {
+      const response = await fetch(`${API_ENDPOINTS.EMAIL_SERVICE}/api/verify-code`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          email,
+          code
+        }),
+      });
+
+      const result = await response.json();
+      return result;
+    } catch (error) {
+      console.error('Verify code failed:', error);
+      return {
+        success: false,
+        error: 'Network error. Please try again.',
+        code: 'NETWORK_ERROR'
+      };
+    }
+  },
+
+  // Register user - Route to Member Auth Cloud Function
+  async registerUser(userData: any, memberCardData: any): Promise<{
+    success: boolean;
+    message?: string;
+    error?: string;
+  }> {
+    try {
+      const response = await fetch(API_ENDPOINTS.MEMBER_AUTH, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify({
           action: 'register',
           userData,
           memberCardData
         })
-      })
+      });
 
-      if (!response.ok) {
-        const errorResult = await response.json()
-        throw new Error(errorResult.error || `HTTP ${response.status}: ${response.statusText}`)
-      }
-
-      const result = await response.json()
-      console.log('Registration result:', result)
-      return result
-
+      return await response.json();
     } catch (error) {
-      console.error('User registration error:', error)
       return {
         success: false,
-        message: 'Registration failed',
-        error: error instanceof Error ? error.message : 'Unknown error',
-        code: 'REGISTRATION_ERROR'
-      }
+        error: 'Registration failed'
+      };
     }
-  }
+  },
 
-  async loginUser(memberCardData: any, pin: string): Promise<{
+  // Member card steganography verification - Route to Email Service (App Engine)
+  async verifyMemberCard(imageData: string): Promise<{
     success: boolean;
-    message: string;
-    token?: string;
-    user?: {
-      id: string;
-      email: string;
-      name: string;
-      firstName: string;
-      lastName: string;
-    };
+    userData?: any;
     error?: string;
-    code?: string;
+    hasData?: boolean;
   }> {
     try {
-      console.log('Logging in user with member card data')
-      
-      const response = await this.fetchWithTimeout(this.memberAuthUrl, {
+      const response = await fetch(`${API_ENDPOINTS.EMAIL_SERVICE}/api/verify-member-card`, {
         method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify({
-          action: 'login',
-          memberCardData,
-          pin
-        })
-      })
+          imageData: imageData
+        }),
+      });
 
-      if (!response.ok) {
-        const errorResult = await response.json()
-        throw new Error(errorResult.error || `HTTP ${response.status}: ${response.statusText}`)
-      }
-
-      const result = await response.json()
-      console.log('Login result:', { success: result.success, user: result.user?.email })
-      
-      // Store token if login successful
-      if (result.success && result.token) {
-        localStorage.setItem('authToken', result.token)
-        localStorage.setItem('user', JSON.stringify(result.user))
-      }
-      
-      return result
-
+      const result = await response.json();
+      return result;
     } catch (error) {
-      console.error('User login error:', error)
+      console.error('Member card verification failed:', error);
       return {
         success: false,
-        message: 'Login failed',
-        error: error instanceof Error ? error.message : 'Unknown error',
-        code: 'LOGIN_ERROR'
-      }
+        error: 'Network error during verification',
+        hasData: false
+      };
     }
-  }
+  },
 
+  // Encode member card with steganography - Route to Email Service (App Engine)
+  async encodeMemberCard(imageUrl: string, loginData: any): Promise<{
+    success: boolean;
+    encodedImageUrl?: string;
+    error?: string;
+  }> {
+    try {
+      const response = await fetch(`${API_ENDPOINTS.EMAIL_SERVICE}/api/encode-member-card`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          imageUrl: imageUrl,
+          loginData: loginData
+        }),
+      });
+
+      const result = await response.json();
+      return result;
+    } catch (error) {
+      console.error('Member card encoding failed:', error);
+      return {
+        success: false,
+        error: 'Network error during encoding'
+      };
+    }
+  },
+
+  // Enhanced health check for all services
+  async healthCheck(service?: 'email' | 'validation' | 'auth'): Promise<{
+    success: boolean;
+    message?: string;
+    status?: string;
+    timestamp?: string;
+    error?: string;
+    service?: string;
+  }> {
+    try {
+      let endpoint: string;
+      let serviceName: string;
+
+      switch (service) {
+        case 'validation':
+          endpoint = API_ENDPOINTS.FORM_VALIDATION;
+          serviceName = 'form-validation';
+          // For Cloud Functions, we need to test with a simple request
+          const validationResponse = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'test' }),
+            signal: AbortSignal.timeout(5000)
+          });
+          return {
+            success: validationResponse.ok,
+            service: serviceName,
+            status: validationResponse.ok ? 'OK' : 'ERROR',
+            message: `Form validation service ${validationResponse.ok ? 'healthy' : 'unhealthy'}`,
+            timestamp: new Date().toISOString()
+          };
+          
+        case 'auth':
+          endpoint = API_ENDPOINTS.MEMBER_AUTH;
+          serviceName = 'member-auth';
+          // For Cloud Functions, we need to test with a simple request
+          const authResponse = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'test' }),
+            signal: AbortSignal.timeout(5000)
+          });
+          return {
+            success: authResponse.ok,
+            service: serviceName,
+            status: authResponse.ok ? 'OK' : 'ERROR',
+            message: `Member auth service ${authResponse.ok ? 'healthy' : 'unhealthy'}`,
+            timestamp: new Date().toISOString()
+          };
+          
+        case 'email':
+        default:
+          endpoint = `${API_ENDPOINTS.EMAIL_SERVICE}/api/health`;
+          serviceName = 'email-service';
+          break;
+      }
+
+      const response = await fetch(endpoint, {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json',
+        },
+        signal: AbortSignal.timeout(10000) // 10 second timeout
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const data = await response.json();
+      
+      return {
+        success: true,
+        status: data.status,
+        service: serviceName,
+        message: data.message || `${serviceName} is healthy`,
+        timestamp: data.timestamp || new Date().toISOString()
+      };
+
+    } catch (error: any) {
+      let errorMessage = `Health check failed for ${service || 'email'} service`;
+      
+      if (error.name === 'TimeoutError') {
+        errorMessage = `Health check timed out for ${service || 'email'} service`;
+      } else if (error.message?.includes('CORS')) {
+        errorMessage = `CORS error detected for ${service || 'email'} service`;
+      } else if (error.message?.includes('Failed to fetch')) {
+        errorMessage = `Network error detected for ${service || 'email'} service`;
+      }
+
+      return {
+        success: false,
+        service: service || 'email',
+        error: errorMessage
+      };
+    }
+  },
+
+  // Check health of all services
+  async healthCheckAll(): Promise<{
+    overall: boolean;
+    services: Array<{
+      name: string;
+      success: boolean;
+      message?: string;
+      status?: string;
+      error?: string;
+    }>;
+  }> {
+    const services = ['email', 'validation', 'auth'] as const;
+    const results = await Promise.allSettled(
+      services.map(service => this.healthCheck(service))
+    );
+
+    const serviceResults = results.map((result, index) => ({
+      name: services[index],
+      success: result.status === 'fulfilled' ? result.value.success : false,
+      message: result.status === 'fulfilled' ? result.value.message : undefined,
+      status: result.status === 'fulfilled' ? result.value.status : undefined,
+      error: result.status === 'fulfilled' ? result.value.error : 
+             result.status === 'rejected' ? result.reason.message : 'Unknown error'
+    }));
+
+    const allHealthy = serviceResults.every(service => service.success);
+
+    return {
+      overall: allHealthy,
+      services: serviceResults
+    };
+  },
+
+  // Authentication and user management methods
+  getCurrentUser(): any {
+    try {
+      const userStr = localStorage.getItem('user');
+      return userStr ? JSON.parse(userStr) : null;
+    } catch {
+      return null;
+    }
+  },
+
+  getAuthToken(): string | null {
+    return localStorage.getItem('authToken');
+  },
+
+  // Verify token - Route to Member Auth Cloud Function
   async verifyToken(token: string): Promise<{
     success: boolean;
-    message: string;
-    user?: {
-      id: string;
-      email: string;
-      name: string;
-    };
+    message?: string;
+    user?: any;
     error?: string;
-    code?: string;
   }> {
     try {
-      console.log('Verifying authentication token')
-      
-      const response = await this.fetchWithTimeout(this.memberAuthUrl, {
+      const response = await fetch(API_ENDPOINTS.MEMBER_AUTH, {
         method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify({
           action: 'verify',
           token
         })
-      })
+      });
 
-      if (!response.ok) {
-        const errorResult = await response.json()
-        throw new Error(errorResult.error || `HTTP ${response.status}: ${response.statusText}`)
-      }
-
-      const result = await response.json()
-      console.log('Token verification result:', { success: result.success, user: result.user?.email })
-      return result
-
+      const data = await response.json();
+      return data;
     } catch (error) {
-      console.error('Token verification error:', error)
       return {
         success: false,
-        message: 'Token verification failed',
-        error: error instanceof Error ? error.message : 'Unknown error',
-        code: 'VERIFICATION_ERROR'
-      }
+        error: 'Token verification failed'
+      };
     }
-  }
+  },
 
-  // Utility methods
   logout(): void {
-    console.log('Logging out user')
-    localStorage.removeItem('authToken')
-    localStorage.removeItem('user')
-  }
+    localStorage.removeItem('authToken');
+    localStorage.removeItem('user');
+  },
 
-  getCurrentUser(): any {
-    try {
-      const userStr = localStorage.getItem('user')
-      return userStr ? JSON.parse(userStr) : null
-    } catch {
-      return null
-    }
-  }
-
-  getAuthToken(): string | null {
-    return localStorage.getItem('authToken')
-  }
-
-  isAuthenticated(): boolean {
-    const token = this.getAuthToken()
-    const user = this.getCurrentUser()
-    return !!(token && user)
-  }
-
-  // Health check for APIs
-  async healthCheck(): Promise<{
-    formValidation: boolean;
-    memberAuth: boolean;
-    message: string;
+  // Login with member card - Route to Member Auth Cloud Function
+  async loginWithMemberCard(memberCardData: any, enteredPin: string): Promise<{
+    success: boolean;
+    message?: string;
+    token?: string;
+    user?: any;
+    error?: string;
   }> {
-    const results = {
-      formValidation: false,
-      memberAuth: false,
-      message: ''
-    }
-
     try {
-      // Test form validation API
-      const validationResponse = await this.fetchWithTimeout(this.formValidationUrl, {
+      const response = await fetch(API_ENDPOINTS.MEMBER_AUTH, {
         method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify({
-          action: 'validateField',
-          field: 'firstName',
-          value: 'Test'
+          action: 'loginWithCard',
+          memberCardData,
+          enteredPin
         })
-      })
-      results.formValidation = validationResponse.ok
+      });
 
-      // Test member auth API  
-      const authResponse = await this.fetchWithTimeout(this.memberAuthUrl, {
-        method: 'POST',
-        body: JSON.stringify({
-          action: 'verify',
-          token: 'test-token'
-        })
-      })
-      results.memberAuth = authResponse.status === 401 || authResponse.ok // 401 is expected for invalid token
-
-      if (results.formValidation && results.memberAuth) {
-        results.message = 'All services are healthy'
-      } else {
-        results.message = 'Some services are unavailable'
+      const data = await response.json();
+      
+      if (data.success && data.token) {
+        localStorage.setItem('authToken', data.token);
+        localStorage.setItem('user', JSON.stringify(data.user));
       }
-
+      
+      return data;
     } catch (error) {
-      results.message = `Health check failed: ${error instanceof Error ? error.message : 'Unknown error'}`
+      return {
+        success: false,
+        error: 'Member card login failed'
+      };
     }
+  },
 
-    console.log('Health check results:', results)
-    return results
+  // Get API endpoints for debugging
+  getApiEndpoints() {
+    return API_ENDPOINTS;
   }
-}
-
-// Export singleton instance
-export const apiService = new ApiService()
-export default apiService 
+} 

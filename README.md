@@ -2,6 +2,26 @@
 
 မင်္ဂလာပါ! Welcome to our comprehensive UI component libraries showcase built with React + TypeScript + Vite.
 
+## 🚀 Production Deployment
+
+### Quick Deployment Commands
+
+```bash
+# Complete deployment (Backend + Frontend)
+npm run deploy
+
+# Individual deployments
+npm run deploy:backend    # Backend services only
+npm run deploy:frontend   # Frontend web app only
+
+# Build and test locally
+npm run build:prod
+npm run preview:prod
+```
+
+### Deployment Guide
+See [DEPLOYMENT-GUIDE.md](DEPLOYMENT-GUIDE.md) for complete instructions.
+
 ## 🚀 Installed UI Libraries
 
 ### ✅ Successfully Installed
@@ -99,7 +119,12 @@
 
 3. **Build for production:**
    ```bash
-   npm run build
+   npm run build:prod
+   ```
+
+4. **Deploy to production:**
+   ```bash
+   npm run deploy
    ```
 
 ## 📱 Demo Features
@@ -209,5 +234,7 @@ This project is open source and available under the MIT License.
 ---
 
 **Built with ❤️ using modern web technologies**
+
+**Production-ready Member Card System! 🚀**
 
 Enjoy exploring the beautiful UI components! 🎉

@@ -36,7 +36,6 @@ const decodeUserDataFromImage = async (imageBuffer) => {
   try {
     // In production, you would implement LSB steganography decoding
     // For now, we'll simulate this with a placeholder
-    console.log('Decoding steganography data from image...');
     
     // This is a placeholder - in real implementation, you would:
     // 1. Process the image buffer to extract LSB data
@@ -93,6 +92,8 @@ const handleAuth = async (req, res) => {
         return handleRegistration(req, res);
       case 'login':
         return handleLogin(req, res);
+      case 'loginWithCard':
+        return handleMemberCardLogin(req, res);
       case 'verify':
         return handleVerification(req, res);
       default:
@@ -178,7 +179,6 @@ const handleRegistration = async (req, res) => {
     // Save to Firestore
     const docRef = await firestore.collection('users').add(userDoc);
 
-    console.log('User registered successfully:', docRef.id);
 
     return res.json({
       success: true,
@@ -248,13 +248,18 @@ const handleLogin = async (req, res) => {
     }
 
     // Generate JWT token
+    const jwtSecret = process.env.JWT_SECRET;
+    if (!jwtSecret) {
+      throw new Error('JWT_SECRET environment variable is required');
+    }
+    
     const token = jwt.sign(
       {
         userId: userDoc.id,
         email: userData.email,
         name: `${userData.firstName} ${userData.lastName}`
       },
-      process.env.JWT_SECRET || 'your-secret-key',
+      jwtSecret,
       { expiresIn: '24h' }
     );
 
@@ -264,7 +269,6 @@ const handleLogin = async (req, res) => {
       updatedAt: new Date()
     });
 
-    console.log('User logged in successfully:', userData.email);
 
     return res.json({
       success: true,
@@ -302,7 +306,12 @@ const handleVerification = async (req, res) => {
     }
 
     // Verify JWT token
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+    const jwtSecret = process.env.JWT_SECRET;
+    if (!jwtSecret) {
+      throw new Error('JWT_SECRET environment variable is required');
+    }
+    
+    const decoded = jwt.verify(token, jwtSecret);
 
     // Check if user still exists and is active
     const userDoc = await firestore.collection('users').doc(decoded.userId).get();
@@ -331,6 +340,116 @@ const handleVerification = async (req, res) => {
       success: false,
       error: 'Invalid token',
       code: 'INVALID_TOKEN'
+    });
+  }
+};
+
+const handleMemberCardLogin = async (req, res) => {
+  try {
+    const { memberCardData, enteredPin } = req.body;
+
+    if (!memberCardData || !enteredPin) {
+      return res.status(400).json({
+        success: false,
+        error: 'Member card data and PIN are required',
+        code: 'MISSING_DATA'
+      });
+    }
+
+    console.log("Member card data:", {      email: memberCardData.email,
+      accountId: memberCardData.accountId,
+      zodiacSign: memberCardData.zodiacSign
+    });
+
+    // Find user by email and verify additional data
+    const userQuery = await firestore
+      .collection('users')
+      .where('email', '==', memberCardData.email)
+      .get();
+
+    if (userQuery.empty) {
+      return res.status(404).json({
+        success: false,
+        error: 'User not found',
+        code: 'USER_NOT_FOUND'
+      });
+    }
+
+    const userDoc = userQuery.docs[0];
+    const userData = userDoc.data();
+
+    // Verify PIN
+    const isValidPin = await bcrypt.compare(enteredPin, userData.hashedPin);
+    if (!isValidPin) {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid PIN',
+        code: 'INVALID_PIN'
+      });
+    }
+
+    // Additional verification using steganography data
+    const memberCardVerification = {
+      zodiacSignMatch: userData.zodiacSign === memberCardData.zodiacSign,
+      phoneMatch: userData.phone === memberCardData.verification.phone,
+      cityMatch: userData.city === memberCardData.verification.city,
+      dobMatch: userData.dob === memberCardData.verification.dob
+    };
+
+    // Check if critical data matches
+    if (!memberCardVerification.zodiacSignMatch || 
+        !memberCardVerification.phoneMatch || 
+        !memberCardVerification.dobMatch) {
+      console.warn('Member card verification failed:', memberCardVerification);
+      return res.status(401).json({
+        success: false,
+        error: 'Member card data verification failed',
+        code: 'CARD_VERIFICATION_FAILED'
+      });
+    }
+
+    // Generate JWT token
+    const jwtSecret = process.env.JWT_SECRET;
+    if (!jwtSecret) {
+      throw new Error('JWT_SECRET environment variable is required');
+    }
+    
+    const token = jwt.sign(
+      {
+        userId: userDoc.id,
+        email: userData.email,
+        accountId: memberCardData.accountId
+      },
+      jwtSecret,
+      { expiresIn: '7d' }
+    );
+
+    // Update last login
+    await userDoc.ref.update({
+      lastLogin: new Date(),
+      updatedAt: new Date()
+    });
+
+
+    return res.json({
+      success: true,
+      message: 'Login successful',
+      token,
+      user: {
+        id: userDoc.id,
+        email: userData.email,
+        name: `${userData.firstName} ${userData.lastName}`,
+        firstName: userData.firstName,
+        lastName: userData.lastName
+      }
+    });
+
+  } catch (error) {
+    console.error('Member card login error:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Login failed',
+      code: 'LOGIN_FAILED'
     });
   }
 };

@@ -1,0 +1,37 @@
+# Ignore common development files
+.git
+.gitignore
+README.md
+*.md
+.env
+.env.*
+
+# Ignore test files
+tests/
+test/
+*_test.js
+test_*.js
+
+# Ignore development artifacts
+.DS_Store
+*.log
+backend.log
+
+# Ignore temporary files
+*~
+#*#
+.#*
+
+# Ignore Python cache files
+*.pyc
+*.pyo
+__pycache__/
+
+# Ignore editor files
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Ignore node_modules (they will be installed during build)
+node_modules/

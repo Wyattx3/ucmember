@@ -1,11 +1,11 @@
-import { useState } from 'react'
+import { useState, useCallback, useRef } from 'react'
 import { motion } from 'framer-motion'
 import styled from 'styled-components'
 import Loader from './Loader'
 import { ValidationUtils } from '../utils/validation'
 import CityAutocomplete from './CityAutocomplete'
-import { SteganographyService } from '../utils/steganography'
 import { apiService } from '../services/api'
+import { useFacebookAuth, type FacebookUser } from '../services/facebook'
 
 interface CreateAccountModalProps {
   isOpen: boolean
@@ -67,10 +67,10 @@ const StyledWrapper = styled.div`
 
 export default function CreateAccountModal({ isOpen, onClose }: CreateAccountModalProps) {
   const [currentStep, setCurrentStep] = useState(1)
-  const [firstName, setFirstName] = useState('John')
+  const [firstName, setFirstName] = useState('')
   const [lastName, setLastName] = useState('')
   const [email, setEmail] = useState('')
-  const [phone, setPhone] = useState('(775) 351-6501')
+  const [phone, setPhone] = useState('')
   const [validationErrors, setValidationErrors] = useState<{[key: string]: string}>({})
   const [dob, setDob] = useState('')
   const [height, setHeight] = useState('')
@@ -80,6 +80,8 @@ export default function CreateAccountModal({ isOpen, onClose }: CreateAccountMod
   const [relationshipStatus, setRelationshipStatus] = useState('')
   const [favoriteArtist, setFavoriteArtist] = useState('')
   const [facebookConnected, setFacebookConnected] = useState(false)
+  const [facebookUser, setFacebookUser] = useState<FacebookUser | null>(null)
+  const [facebookLoading, setFacebookLoading] = useState(false)
   const [privatePhoto, setPrivatePhoto] = useState<File | null>(null)
   const [publicPhoto, setPublicPhoto] = useState<File | null>(null)
   const [rawPublicPhoto, setRawPublicPhoto] = useState<File | null>(null)
@@ -97,7 +99,13 @@ export default function CreateAccountModal({ isOpen, onClose }: CreateAccountMod
   const [isCodeSent, setIsCodeSent] = useState(false)
   const [isGeneratingCard, setIsGeneratingCard] = useState(false)
   const [memberCardUrl, setMemberCardUrl] = useState('')
-  // const [cardGenerated, setCardGenerated] = useState(false) // Removed as not used
+  const [verificationError, setVerificationError] = useState('')
+  const [isVerifying, setIsVerifying] = useState(false)
+  const [resendCountdown, setResendCountdown] = useState(0)
+  const [canResend, setCanResend] = useState(true)
+
+  // Add debounce timer ref
+  const debounceTimers = useRef<{[key: string]: NodeJS.Timeout}>({})
 
   // Calculate zodiac sign from DOB
   const getZodiacSign = (dateString: string) => {
@@ -125,80 +133,63 @@ export default function CreateAccountModal({ isOpen, onClose }: CreateAccountMod
 
   const zodiacSign = getZodiacSign(dob)
 
-  // Production validation handlers using backend API
-  const validateAndSetField = async (fieldName: string, value: string, validator?: (val: string) => boolean, formatter?: (val: string) => string) => {
+  // Optimized validation with debouncing and immediate client-side validation
+  const validateAndSetField = useCallback((fieldName: string, value: string, validator?: (val: string) => boolean, formatter?: (val: string) => string) => {
+    // Clear existing timer for this field
+    if (debounceTimers.current[fieldName]) {
+      clearTimeout(debounceTimers.current[fieldName])
+    }
+
     const errors = {...validationErrors}
     let processedValue = value
 
-    try {
-      // Use production backend for validation and formatting
-      const result = await apiService.validateAndFormatField(fieldName, value)
-      
-      if (result.success) {
-        processedValue = result.formatted
-        
-        if (!result.valid && result.error) {
-          errors[fieldName] = result.error
-        } else {
-          delete errors[fieldName]
-        }
+    // Apply formatter immediately if provided
+    if (formatter) {
+      processedValue = formatter(value)
+    }
+
+    // Sanitize input immediately
+    processedValue = ValidationUtils.sanitizeInput(processedValue)
+
+    // Immediate client-side validation for responsive UI
+    let hasClientError = false
+
+    // Validate English only for text fields
+    if (['firstName', 'lastName', 'city', 'hobby', 'favoriteArtist'].includes(fieldName)) {
+      if (processedValue && !ValidationUtils.isEnglishOnly(processedValue)) {
+        errors[fieldName] = 'First name must contain only English letters, spaces, hyphens, apostrophes, and periods'
+        hasClientError = true
+      } else if (processedValue.length < 2 && processedValue.length > 0) {
+        errors[fieldName] = 'Name must be at least 2 characters'
+        hasClientError = true
       } else {
-        // Fallback to client-side validation
-        console.warn('Backend validation failed, using client-side validation')
-        
-        // Apply formatter if provided
-        if (formatter) {
-          processedValue = formatter(value)
-        }
-
-        // Sanitize input
-        processedValue = ValidationUtils.sanitizeInput(processedValue)
-
-        // Validate English only for text fields
-        if (['firstName', 'lastName', 'city', 'hobby', 'favoriteArtist'].includes(fieldName)) {
-          if (processedValue && !ValidationUtils.isEnglishOnly(processedValue)) {
-            errors[fieldName] = 'Please use English characters only'
-          } else {
-            delete errors[fieldName]
-          }
-        }
-
-        // Apply custom validator if provided
-        if (validator && processedValue && !validator(processedValue)) {
-          if (fieldName === 'email') {
-            errors[fieldName] = 'Please enter a valid email address'
-          } else if (fieldName === 'phone') {
-            errors[fieldName] = 'Please enter a valid phone number'
-          } else if (fieldName === 'firstName' || fieldName === 'lastName') {
-            errors[fieldName] = 'Name must be 2-50 characters, English letters only'
-          } else {
-            errors[fieldName] = 'Invalid format'
-          }
-        } else if (validator) {
-          delete errors[fieldName]
-        }
-      }
-
-    } catch (error) {
-      console.error('Validation API error:', error)
-      // Fallback to original client-side validation
-      if (formatter) {
-        processedValue = formatter(value)
-      }
-      processedValue = ValidationUtils.sanitizeInput(processedValue)
-      
-      if (['firstName', 'lastName', 'city', 'hobby', 'favoriteArtist'].includes(fieldName)) {
-        if (processedValue && !ValidationUtils.isEnglishOnly(processedValue)) {
-          errors[fieldName] = 'Please use English characters only'
-        } else {
-          delete errors[fieldName]
-        }
+        delete errors[fieldName]
       }
     }
 
+    // Apply custom validator immediately if provided
+    if (validator && processedValue && !validator(processedValue) && !hasClientError) {
+      if (fieldName === 'email') {
+        errors[fieldName] = 'Please enter a valid email address'
+        hasClientError = true
+      } else if (fieldName === 'phone') {
+        errors[fieldName] = 'Please enter a valid phone number'
+        hasClientError = true
+      } else if (fieldName === 'firstName' || fieldName === 'lastName') {
+        errors[fieldName] = 'Name must be 2-50 characters, English letters only'
+        hasClientError = true
+      } else {
+        errors[fieldName] = 'Invalid format'
+        hasClientError = true
+      }
+    } else if (validator && !hasClientError) {
+      delete errors[fieldName]
+    }
+
+    // Update validation errors immediately
     setValidationErrors(errors)
     
-    // Update the field value
+    // Update the field value immediately
     switch (fieldName) {
       case 'firstName': setFirstName(processedValue); break
       case 'lastName': setLastName(processedValue); break
@@ -208,7 +199,33 @@ export default function CreateAccountModal({ isOpen, onClose }: CreateAccountMod
       case 'hobby': setHobby(processedValue); break
       case 'favoriteArtist': setFavoriteArtist(processedValue); break
     }
-  }
+
+    // Only call backend validation after user stops typing (debounced)
+    if (!hasClientError && processedValue.trim() !== '') {
+      debounceTimers.current[fieldName] = setTimeout(async () => {
+        try {
+          console.log(`Debounced backend validation for ${fieldName}:`, processedValue)
+          const result = await apiService.validateAndFormatField(fieldName, processedValue)
+          
+          if (result.success && !result.valid && result.error) {
+            const newErrors = {...validationErrors}
+            newErrors[fieldName] = result.error
+            setValidationErrors(newErrors)
+          } else if (result.success && result.valid) {
+            // Remove error for this field if validation passed
+            if (validationErrors[fieldName]) {
+              const newErrors = {...validationErrors}
+              delete newErrors[fieldName]
+              setValidationErrors(newErrors)
+            }
+          }
+        } catch (error) {
+          console.warn('Backend validation error:', error)
+          // Client-side validation already applied, so no additional error needed
+        }
+      }, 1000) // 1 second debounce
+    }
+  }, [validationErrors])
 
   // Check if all fields are filled and valid
   const isFormValid = firstName && lastName && email && phone && dob && height && gender && city && hobby && relationshipStatus && favoriteArtist &&
@@ -226,10 +243,70 @@ export default function CreateAccountModal({ isOpen, onClose }: CreateAccountMod
     }
   }
 
-  const handleFacebookConnect = () => {
-    setFacebookConnected(true)
-    // Here you would integrate with Facebook SDK
-    console.log('Connecting to Facebook...')
+  // Get Facebook authentication functions
+  const { login: facebookLogin, isConfigured: isFacebookConfigured } = useFacebookAuth()
+
+  const handleFacebookConnect = async () => {
+    setFacebookLoading(true)
+    
+    try {
+      let result;
+      
+      // Try production Facebook authentication first
+      if (isFacebookConfigured()) {
+        console.log('Using production Facebook authentication...')
+        result = await facebookLogin()
+      } else {
+        console.warn('Facebook App ID not configured, using development fallback...')
+        // Import mockLogin dynamically for development fallback
+        const { facebookAuth } = await import('../services/facebook')
+        result = await facebookAuth.mockLogin()
+      }
+      
+      if (result.success && result.user) {
+        setFacebookConnected(true)
+        setFacebookUser(result.user)
+        
+        // Auto-fill form data from Facebook
+        if (result.user.first_name && !firstName) {
+          setFirstName(result.user.first_name)
+        }
+        if (result.user.last_name && !lastName) {
+          setLastName(result.user.last_name)
+        }
+        if (result.user.email && !email) {
+          setEmail(result.user.email)
+        }
+        
+        console.log('Facebook authentication successful:', {
+          name: result.user.name,
+          email: result.user.email,
+          isDevelopment: !isFacebookConfigured()
+        })
+      } else {
+        console.error('Facebook authentication failed:', result.error)
+        
+        // Show appropriate error message
+        let errorMessage = 'Facebook authentication မအောင်မြင်ပါ။'
+        
+        if (result.error?.includes('not configured')) {
+          errorMessage = 'Facebook App configuration လိုအပ်ပါတယ်။ Administrator ကို ဆက်သွယ်ပါ။'
+        } else if (result.error?.includes('cancelled')) {
+          errorMessage = 'Facebook login ကို ပယ်ဖျက်လိုက်ပါတယ်။'
+        } else if (result.error?.includes('permission')) {
+          errorMessage = 'Facebook permission လိုအပ်ပါတယ်။ ပြန်လုပ်ကြည့်ပါ။'
+        } else if (result.error?.includes('network') || result.error?.includes('load')) {
+          errorMessage = 'Internet connection စစ်ကြည့်ပြီး ပြန်လုပ်ကြည့်ပါ။'
+        }
+        
+        alert(errorMessage)
+      }
+    } catch (error) {
+      console.error('Facebook authentication error:', error)
+      alert('Facebook နှင့် ချိတ်ဆက်ရာတွင် ပြဿနာရှိနေပါတယ်။ ပြန်လုပ်ကြည့်ပါ။')
+    } finally {
+      setFacebookLoading(false)
+    }
   }
 
   const handlePrivatePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -258,10 +335,99 @@ export default function CreateAccountModal({ isOpen, onClose }: CreateAccountMod
     }
   }
 
-  const handleSendVerificationCode = () => {
-    // Here you would send verification code to email
-    setIsCodeSent(true)
-    console.log('Verification code sent to:', email)
+  const handleSendVerificationCode = async () => {
+    try {
+      console.log('Sending verification code using production email service...')
+      
+      const result = await apiService.sendVerificationCode(email, firstName, lastName)
+      
+      if (result.success) {
+        setIsCodeSent(true)
+        setCanResend(false)
+        setResendCountdown(60) // 60 seconds countdown
+        
+        // Start countdown timer
+        const timer = setInterval(() => {
+          setResendCountdown(prev => {
+            if (prev <= 1) {
+              clearInterval(timer)
+              setCanResend(true)
+              return 0
+            }
+            return prev - 1
+          })
+        }, 1000)
+        
+        console.log('Verification code sent successfully:', result.message)
+        console.log('Email ID:', result.emailId)
+        console.log('Expires in:', result.expiresIn, 'minutes')
+      } else {
+        console.error('Failed to send verification code:', result.error)
+        
+        // Show user-friendly error message
+        let errorMessage = 'Failed to send verification code. '
+        
+        if (result.code === 'EMAIL_RATE_LIMITED') {
+          errorMessage = 'Too many emails sent. Please wait before requesting another.'
+        } else if (result.code === 'INVALID_EMAIL') {
+          errorMessage = 'Please enter a valid email address.'
+        } else if (result.error?.includes('network') || result.error?.includes('timeout')) {
+          errorMessage = 'Network error. Please check your connection and try again.'
+        } else {
+          errorMessage = result.message || 'Please try again later.'
+        }
+        
+        alert(errorMessage) // You can replace this with a proper toast notification
+      }
+      
+    } catch (error) {
+      console.error('Send verification code error:', error)
+      alert('Failed to send verification code. Please try again.')
+    }
+  }
+
+  const handleVerifyCode = async (code: string) => {
+    if (code.length !== 4 || isVerifying) return
+    
+    setIsVerifying(true)
+    setVerificationError('')
+    
+    try {
+      const result = await apiService.verifyCode(email, code)
+      
+      if (result.success) {
+        console.log('Email verified successfully')
+        setCurrentStep(4) // Move to PIN step
+      } else {
+        // Handle verification errors
+        let errorMessage = 'Invalid verification code'
+        
+        if (result.code === 'CODE_EXPIRED') {
+          errorMessage = 'Verification code expired. Please request a new one.'
+        } else if (result.code === 'TOO_MANY_ATTEMPTS') {
+          errorMessage = 'Too many attempts. Please request a new code.'
+        } else if (result.code === 'INVALID_CODE') {
+          errorMessage = `Invalid code. ${result.attemptsRemaining || 0} attempts remaining.`
+        }
+        
+        setVerificationError(errorMessage)
+        
+        // Clear verification code and shake inputs
+        setVerificationCode(['', '', '', ''])
+        
+        // Focus first input
+        setTimeout(() => {
+          const firstInput = document.getElementById('code-0')
+          firstInput?.focus()
+        }, 100)
+      }
+    } catch (error) {
+      console.error('Verification error:', error)
+      setVerificationError('Network error. Please try again.')
+      setVerificationCode(['', '', '', ''])
+    } finally {
+      setIsVerifying(false)
+    }
   }
 
   const handleVerificationCodeChange = (index: number, value: string) => {
@@ -270,10 +436,20 @@ export default function CreateAccountModal({ isOpen, onClose }: CreateAccountMod
       newCode[index] = value
       setVerificationCode(newCode)
       
+      // Clear error when user starts typing
+      if (verificationError) {
+        setVerificationError('')
+      }
+      
       // Auto-focus next input
       if (value && index < 3) {
         const nextInput = document.getElementById(`code-${index + 1}`)
         nextInput?.focus()
+      }
+      
+      // Auto-verify when all 4 digits are entered
+      if (index === 3 && value && newCode.every(digit => digit !== '')) {
+        handleVerifyCode(newCode.join(''))
       }
     }
   }
@@ -337,39 +513,27 @@ export default function CreateAccountModal({ isOpen, onClose }: CreateAccountMod
     setIsGeneratingCard(true)
     
     try {
-      console.log('Starting member card generation...')
-      console.log('Account data being used:')
-      console.log('- First Name:', firstName)
-      console.log('- Last Name:', lastName)
-      console.log('- Full Name:', `${firstName} ${lastName}`)
-      console.log('- Public Photo:', publicPhoto ? publicPhoto.name : 'No photo')
-      console.log('- Zodiac sign:', zodiacSign)
-      
       // Validate required data
       if (!firstName || !lastName) {
         throw new Error('Name information is missing. Please complete your profile first.')
       }
       
-      if (!publicPhoto) {
-        console.warn('No public photo provided - card will be generated without photo')
-      }
-      
       // Get template UUID based on zodiac sign
       const templateUuid = zodiacTemplates[zodiacSign]
-      console.log('Template UUID:', templateUuid)
       
       if (!templateUuid) {
         throw new Error(`Template not found for zodiac sign: ${zodiacSign}`)
       }
 
+      console.log('Using template UUID:', templateUuid, 'for zodiac:', zodiacSign)
+
       // Convert photo to base64 if exists
       let photoData = null
       if (publicPhoto) {
-        console.log('Converting photo to base64...')
         try {
           const base64String = await convertToBase64(publicPhoto)
-          console.log('Photo converted successfully')
           photoData = base64String
+          console.log('Photo converted to base64, size:', base64String.length)
         } catch (photoError) {
           console.error('Photo conversion error:', photoError)
           throw new Error('Failed to process photo. Please try with a different image.')
@@ -377,80 +541,94 @@ export default function CreateAccountModal({ isOpen, onClose }: CreateAccountMod
       }
 
       // First, fetch template data to get actual layer names
-      console.log('Fetching template data to get layer names...')
-      const templateResponse = await fetch(`/api/placid/api/rest/templates/${templateUuid}`, {
-        method: 'GET',
-        headers: {
-          'Authorization': 'Bearer placid-shkqjnmsaeksxkwy-neunc45bhjjm6cv9',
-          'Accept': 'application/json'
-        }
-      })
-
       let textLayerName = 'Name' // fallback
       let photoLayerName = 'Photo' // fallback
 
-      if (templateResponse.ok) {
-        const templateData = await templateResponse.json()
-        console.log('Template data:', templateData)
-        
-        if (templateData.layers) {
-          // Find text layer
-          const textLayer = templateData.layers.find((layer: any) => layer.type === 'text')
-          if (textLayer) {
-            textLayerName = textLayer.name
-            console.log('Found text layer:', textLayerName)
+      try {
+        console.log('Fetching template metadata...')
+        const templateResponse = await fetch(`/api/placid/api/rest/templates/${templateUuid}`, {
+          method: 'GET',
+          headers: {
+            'Authorization': 'Bearer placid-shkqjnmsaeksxkwy-neunc45bhjjm6cv9',
+            'Accept': 'application/json'
           }
+        })
+
+        if (templateResponse.ok) {
+          const templateData = await templateResponse.json()
+          console.log('Template data received:', templateData)
           
-          // Find picture layer
-          const pictureLayer = templateData.layers.find((layer: any) => layer.type === 'picture')
-          if (pictureLayer) {
-            photoLayerName = pictureLayer.name
-            console.log('Found picture layer:', photoLayerName)
+          if (templateData.layers && Array.isArray(templateData.layers)) {
+            // Find text layer - look for common text layer names
+            const textLayer = templateData.layers.find((layer: any) => 
+              layer.type === 'text' || 
+              layer.name?.toLowerCase().includes('name') ||
+              layer.name?.toLowerCase().includes('text') ||
+              layer.name?.toLowerCase().includes('label')
+            )
+            if (textLayer) {
+              textLayerName = textLayer.name
+              console.log('Found text layer:', textLayerName)
+            }
+            
+            // Find picture layer - look for common picture layer names
+            const pictureLayer = templateData.layers.find((layer: any) => 
+              layer.type === 'picture' || 
+              layer.type === 'image' ||
+              layer.name?.toLowerCase().includes('photo') ||
+              layer.name?.toLowerCase().includes('picture') ||
+              layer.name?.toLowerCase().includes('image') ||
+              layer.name?.toLowerCase().includes('avatar')
+            )
+            if (pictureLayer) {
+              photoLayerName = pictureLayer.name
+              console.log('Found photo layer:', photoLayerName)
+            }
+
+            // Debug: List all available layers
+            console.log('All template layers:', templateData.layers.map((l: any) => ({ name: l.name, type: l.type })))
           }
+        } else {
+          console.warn('Failed to fetch template metadata:', templateResponse.status)
         }
-      } else {
-        console.warn('Could not fetch template data, using fallback layer names')
+      } catch (templateError) {
+        console.warn('Template metadata fetch error:', templateError)
+        // Continue with fallback layer names
       }
 
+      // Build request payload with proper layer structure
       const requestPayload = {
         template_uuid: templateUuid,
-        layers: {
-          [textLayerName]: {
-            'text': `${firstName} ${lastName}`
-          }
-        } as { [key: string]: any }
+        layers: {} as { [key: string]: any }
       }
 
-      // Add photo layer only if photo exists
+      // Add name to text layer
+      requestPayload.layers[textLayerName] = {
+        'text': `${firstName} ${lastName}`
+      }
+
+      // Add photo layer if photo exists
       if (photoData) {
         requestPayload.layers[photoLayerName] = {
           'image': photoData
         }
-        console.log('Photo layer added:', photoLayerName)
-      } else {
-        console.log('No photo layer - generating card with name only')
+        console.log('Added photo to layer:', photoLayerName)
       }
 
-                    console.log('Final payload data:')
-       console.log('- Template UUID:', templateUuid)
-       console.log('- Name for card:', `${firstName} ${lastName}`)
-       console.log('- Photo included:', photoData ? 'Yes' : 'No')
-       console.log('- Text layer name:', textLayerName)
-       console.log('- Photo layer name:', photoData ? photoLayerName : 'None')
-       console.log('- Total layers:', Object.keys(requestPayload.layers).length)
-
-      // Single API request to save credits
-      console.log('Making single API request to save credits...')
-      console.log('Sending request to:', '/api/placid/api/rest/images')
-      console.log('Request headers:', {
-        'Authorization': 'Bearer placid-shkqjnmsaeksxkwy-neunc45bhjjm6cv9',
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
+      console.log('Request payload structure:', {
+        template_uuid: requestPayload.template_uuid,
+        layers: Object.keys(requestPayload.layers),
+        textLayer: { name: textLayerName, content: requestPayload.layers[textLayerName] },
+        photoLayer: photoData ? { name: photoLayerName, hasImage: !!photoData } : null
       })
-      
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 30000) // 30 second timeout
 
+      // Generate member card
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => {
+        controller.abort()
+      }, 45000) // Increased timeout to 45 seconds
+      
+      console.log('Sending card generation request...')
       const response = await fetch('/api/placid/api/rest/images', {
         method: 'POST',
         headers: {
@@ -463,11 +641,10 @@ export default function CreateAccountModal({ isOpen, onClose }: CreateAccountMod
       })
 
       clearTimeout(timeoutId)
-      console.log(`API Response status: ${response.status}`)
       
       if (!response.ok) {
         const errorText = await response.text()
-        console.error(`API Error (${response.status}):`, errorText)
+        console.error('API Error Response:', errorText)
         
         if (response.status === 401) {
           throw new Error('API authentication failed. Please contact administrator.')
@@ -483,8 +660,7 @@ export default function CreateAccountModal({ isOpen, onClose }: CreateAccountMod
       }
 
       const responseData = await response.json()
-      console.log('API Response data:', responseData)
-      console.log('Full API response structure:', JSON.stringify(responseData, null, 2))
+      console.log('API Response:', responseData)
       
       // Check for image URL in different possible fields
       let imageUrl = responseData.image_url || 
@@ -498,173 +674,150 @@ export default function CreateAccountModal({ isOpen, onClose }: CreateAccountMod
                     responseData.data?.image_url ||
                     responseData.data?.url
 
-      console.log('Initial image URL:', imageUrl)
-      console.log('Response status:', responseData.status)
-      console.log('Polling URL:', responseData.polling_url)
-
-        // If no image URL but has polling URL, this is an async operation
-        if (!imageUrl && responseData.polling_url && responseData.status) {
-          console.log('Image generation is async, polling for result...')
+      // If no image URL but has polling URL, this is an async operation
+      if (!imageUrl && responseData.polling_url && responseData.status) {
+        console.log('Async generation detected, polling for result...')
+        // Poll for the result
+        const maxPollAttempts = 45 // 45 attempts = 45 seconds max
+        let pollAttempt = 0
+        
+        while (pollAttempt < maxPollAttempts && !imageUrl) {
+          pollAttempt++
           
-          // Poll for the result
-          const maxPollAttempts = 30 // 30 attempts = 30 seconds max
-          let pollAttempt = 0
+          // Wait 1 second before polling
+          await new Promise(resolve => setTimeout(resolve, 1000))
           
-          while (pollAttempt < maxPollAttempts && !imageUrl) {
-            pollAttempt++
-            console.log(`Polling attempt ${pollAttempt}/${maxPollAttempts}...`)
-            
-            // Wait 1 second before polling
-            await new Promise(resolve => setTimeout(resolve, 1000))
-            
-            try {
-              const pollResponse = await fetch(responseData.polling_url.replace('https://api.placid.app', '/api/placid'), {
-                method: 'GET',
-                headers: {
-                  'Authorization': 'Bearer placid-shkqjnmsaeksxkwy-neunc45bhjjm6cv9',
-                  'Accept': 'application/json'
-                }
-              })
-              
-              if (pollResponse.ok) {
-                const pollData = await pollResponse.json()
-                console.log(`Poll ${pollAttempt} response:`, pollData)
-                
-                // Check if image is ready
-                imageUrl = pollData.image_url || pollData.url || pollData.download_url
-                
-                if (imageUrl) {
-                  console.log('Image generation completed:', imageUrl)
-                  break
-                } else if (pollData.status === 'failed' || pollData.status === 'error') {
-                  console.error('Image generation failed:', pollData)
-                  throw new Error(`Image generation failed: ${pollData.errors || 'Unknown error'}`)
-                } else {
-                  console.log(`Image still processing... Status: ${pollData.status}`)
-                }
-              } else {
-                console.warn(`Poll attempt ${pollAttempt} failed with status ${pollResponse.status}`)
+          try {
+            const pollResponse = await fetch(responseData.polling_url.replace('https://api.placid.app', '/api/placid'), {
+              method: 'GET',
+              headers: {
+                'Authorization': 'Bearer placid-shkqjnmsaeksxkwy-neunc45bhjjm6cv9',
+                'Accept': 'application/json'
               }
-            } catch (pollError) {
-              console.warn(`Poll attempt ${pollAttempt} error:`, pollError)
-              // Continue polling even if one attempt fails
+            })
+            
+            if (pollResponse.ok) {
+              const pollData = await pollResponse.json()
+              console.log(`Poll attempt ${pollAttempt}:`, pollData)
+              
+              // Check if image is ready
+              imageUrl = pollData.image_url || pollData.url || pollData.download_url
+              
+              if (imageUrl) {
+                console.log('Image generation completed:', imageUrl)
+                break
+              } else if (pollData.status === 'failed' || pollData.status === 'error') {
+                throw new Error(`Image generation failed: ${pollData.errors || 'Unknown error'}`)
+              }
             }
-          }
-          
-          if (!imageUrl) {
-            throw new Error('Image generation timed out after polling')
+          } catch (pollError) {
+            console.warn(`Poll attempt ${pollAttempt} failed:`, pollError)
+            // Continue polling even if one attempt fails
           }
         }
-
-        console.log('Final image URL:', imageUrl)
-        console.log('All possible URL fields:', {
-          image_url: responseData.image_url,
-          url: responseData.url,
-          download_url: responseData.download_url,
-          png_url: responseData.png_url,
-          jpeg_url: responseData.jpeg_url,
-          image: responseData.image,
-          result_image_url: responseData.result?.image_url,
-          result_url: responseData.result?.url,
-          data_image_url: responseData.data?.image_url,
-          data_url: responseData.data?.url
-        })
-
+        
         if (!imageUrl) {
-          console.error('No image URL found in response:', responseData)
-          console.error('Response keys:', Object.keys(responseData))
-          throw new Error(`Brand template generation failed - no image URL received. Response keys: ${Object.keys(responseData).join(', ')}, Status: ${responseData.status}`)
+          throw new Error('Image generation timed out after polling')
         }
+      }
 
-        // Verify the image URL is accessible
-        try {
-          const imageCheck = await fetch(imageUrl, { method: 'HEAD' })
-          if (!imageCheck.ok) {
-            throw new Error('Generated brand template is not accessible')
-          }
-        } catch (imageError) {
-          console.warn('Image URL check failed:', imageError)
-          // Continue anyway, the URL might still work for display
-        }
+      if (!imageUrl) {
+        throw new Error('Brand template generation failed - no image URL received')
+      }
 
-        // Apply steganography to hide user data in the card
-        console.log('Applying steganography to member card...')
-        try {
-          const userData = {
-            email: email,
-            name: `${firstName} ${lastName}`,
-            pin: pinCode.join('')
-          }
-          
-          // Create downloadable card with hidden data
-          const encodedCard = await SteganographyService.createDownloadableCard(
-            imageUrl,
-            userData,
-            'member_card.png'
-          )
-          
-          console.log('Steganography applied successfully')
-          console.log('Encoded card created:', encodedCard.filename)
-          
-          // Use encoded image URL for display and download
-          setMemberCardUrl(encodedCard.url)
-          // setCardGenerated(true) // Removed
-          console.log('Brand member card with hidden data generated successfully')
-          
-          // Register user with backend after successful card generation
-          await registerUserWithBackend(encodedCard.url)
-          
-        } catch (stegoError) {
-          console.error('Steganography failed, using original card:', stegoError)
-          // Fallback to original card if steganography fails
-          setMemberCardUrl(imageUrl)
-          // setCardGenerated(true) // Removed
-          console.log('Brand member card generated successfully (without steganography):', imageUrl)
-          
-          // Register user with backend using original card
-          await registerUserWithBackend(imageUrl)
+      console.log('Final image URL:', imageUrl)
+
+      // Verify the image URL is accessible
+      try {
+        const imageCheck = await fetch(imageUrl, { method: 'HEAD' })
+        if (!imageCheck.ok) {
+          throw new Error('Generated brand template is not accessible')
         }
-        
-      } catch (error) {
-        console.error('Brand member card generation failed:', error)
-        
-        const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred'
-        console.error('Error message:', errorMessage)
-        
-        // Show detailed error message and stop the process
-        let userMessage = 'Brand member card generation မအောင်မြင်ပါ။\n\n'
-        
-        if (errorMessage.includes('Failed to fetch') || errorMessage.includes('Load failed')) {
-          userMessage += 'Internet connection စစ်ကြည့်ပြီး ပြန်လုပ်ကြည့်ပါ။'
-        } else if (errorMessage.includes('API authentication')) {
-          userMessage += 'API authentication ပြဿနာ။ Administrator ကို contact လုပ်ပါ။'
-        } else if (errorMessage.includes('Brand template')) {
-          userMessage += 'Brand template configuration ပြဿနာ။ Administrator ကို contact လုပ်ပါ။'
-        } else if (errorMessage.includes('timeout') || errorMessage.includes('AbortError')) {
-          userMessage += 'Server response နှေးနေပါတယ်။ ပြန်လုပ်ကြည့်ပါ။'
-        } else if (errorMessage.includes('Failed to process photo')) {
-          userMessage += 'Photo ပြဿနာ ရှိနေပါတယ်။ မတူတဲ့ photo နဲ့ ပြန်လုပ်ကြည့်ပါ။'
-        } else {
-          userMessage += 'Technical error ဖြစ်နေပါတယ်။ Administrator ကို contact လုပ်ပါ။'
-        }
-        
-        userMessage += '\n\nTechnical details: ' + errorMessage
-        
-        console.error('Card generation failed:', userMessage)
-        
-        // Reset states and go back to PIN step
-        // setCardGenerated(false) // Removed
-        setMemberCardUrl('')
-        setCurrentStep(4) // Go back to PIN step to try again
-      } finally {
-        setIsGeneratingCard(false)
-          }
+        console.log('Image URL verified accessible')
+      } catch (imageError) {
+        console.warn('Image URL check failed:', imageError)
+        // Continue anyway, the URL might still work for display
+      }
+
+             // Prepare login data for steganography
+       const loginData = {
+         email: email,
+         name: `${firstName} ${lastName}`,
+         pin: pinCode.join(''),
+         accountId: `MB${Date.now()}${Math.random().toString(36).substr(2, 4).toUpperCase()}`,
+         createdAt: new Date().toISOString(),
+         zodiacSign: zodiacSign,
+         verification: {
+           phone: phone,
+           city: city,
+           dob: dob
+         }
+       }
+       
+       console.log('Registration data prepared:', { 
+         email: loginData.email, 
+         name: loginData.name, 
+         accountId: loginData.accountId 
+       })
+       
+       // Apply steganography using backend API service
+       try {
+         console.log('Encoding member card with backend steganography...')
+         const stegoResult = await apiService.encodeMemberCard(imageUrl, loginData)
+         
+         if (stegoResult.success && stegoResult.encodedImageUrl) {
+           console.log('Steganography encoding successful')
+           setMemberCardUrl(stegoResult.encodedImageUrl)
+           
+           // Register user with backend using encoded image
+           await registerUserWithBackend(stegoResult.encodedImageUrl, loginData.accountId)
+         } else {
+           console.warn('Steganography encoding failed:', stegoResult.error)
+           // Fallback to original image
+           setMemberCardUrl(imageUrl)
+           await registerUserWithBackend(imageUrl, loginData.accountId)
+         }
+       } catch (stegoError) {
+         console.warn('Steganography failed, using original image:', stegoError)
+         // Fallback to original image
+         setMemberCardUrl(imageUrl)
+         await registerUserWithBackend(imageUrl, loginData.accountId)
+       }
+      
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred'
+      console.error('Member card generation error:', error)
+      
+      // Show user-friendly error message
+      let userMessage = 'Member card generation မအောင်မြင်ပါ။\n\n'
+      
+      if (errorMessage.includes('Failed to fetch') || errorMessage.includes('Load failed')) {
+        userMessage += 'Internet connection စစ်ကြည့်ပြီး ပြန်လုပ်ကြည့်ပါ။'
+      } else if (errorMessage.includes('API authentication')) {
+        userMessage += 'API authentication ပြဿနာ။ Administrator ကို contact လုပ်ပါ။'
+      } else if (errorMessage.includes('Brand template')) {
+        userMessage += 'Brand template configuration ပြဿနာ။ Administrator ကို contact လုပ်ပါ။'
+      } else if (errorMessage.includes('timeout') || errorMessage.includes('AbortError')) {
+        userMessage += 'Server response နှေးနေပါတယ်။ ပြန်လုပ်ကြည့်ပါ။'
+      } else if (errorMessage.includes('Failed to process photo')) {
+        userMessage += 'Photo ပြဿနာ ရှိနေပါတယ်။ မတူတဲ့ photo နဲ့ ပြန်လုပ်ကြည့်ပါ။'
+      } else {
+        userMessage += `Technical error: ${errorMessage}`
+      }
+      
+      // Show error to user
+      alert(userMessage)
+      
+      // Reset states and go back to PIN step
+      setMemberCardUrl('')
+      setCurrentStep(4) // Go back to PIN step to try again
+    } finally {
+      setIsGeneratingCard(false)
+    }
   }
 
-  const registerUserWithBackend = async (memberCardUrl: string) => {
+  const registerUserWithBackend = async (memberCardUrl: string, accountId?: string | null) => {
     try {
-      console.log('Registering user with production backend...')
-      
       const userData = {
         firstName,
         lastName,
@@ -682,7 +835,8 @@ export default function CreateAccountModal({ isOpen, onClose }: CreateAccountMod
         facebookConnected,
         hasPrivatePhoto: !!privatePhoto,
         hasPublicPhoto: !!publicPhoto,
-        verificationCode: verificationCode.join('')
+        verificationCode: verificationCode.join(''),
+        accountId
       }
 
       const memberCardData = {
@@ -692,19 +846,9 @@ export default function CreateAccountModal({ isOpen, onClose }: CreateAccountMod
         zodiacSign
       }
 
-      const registrationResult = await apiService.registerUser(userData, memberCardData)
-      
-      if (registrationResult.success) {
-        console.log('User successfully registered with backend!')
-        console.log('User ID:', registrationResult.userId)
-      } else {
-        console.error('Backend registration failed:', registrationResult.error)
-        // Card is still generated, user can still download it
-        // Just log the error without breaking the flow
-      }
+      await apiService.registerUser(userData, memberCardData)
       
     } catch (error) {
-      console.error('Backend registration error:', error)
       // Card generation was successful, registration failure shouldn't break the flow
     }
   }
@@ -719,20 +863,67 @@ export default function CreateAccountModal({ isOpen, onClose }: CreateAccountMod
   }
 
   const handleDownloadCard = () => {
-    console.log('Download card clicked!')
-    console.log('Member card URL:', memberCardUrl)
-    
     if (memberCardUrl) {
       try {
         const link = document.createElement('a')
-        link.href = memberCardUrl
-        const filename = `${firstName}_${lastName}_MemberCard.png`
+        
+        // Handle both data URLs and regular URLs
+        if (memberCardUrl.startsWith('data:')) {
+          // For data URLs (steganography encoded images)
+          link.href = memberCardUrl
+        } else {
+          // For regular URLs, we need to fetch and convert to blob to avoid CORS issues
+          fetch(memberCardUrl)
+            .then(response => response.blob())
+            .then(blob => {
+              const blobUrl = URL.createObjectURL(blob)
+              link.href = blobUrl
+              const filename = `${firstName}_${lastName}_MemberCard_Encoded.png`
+              link.download = filename
+              link.target = '_blank'
+              link.rel = 'noopener noreferrer'
+              
+              // Add to DOM temporarily
+              link.style.display = 'none'
+              document.body.appendChild(link)
+              
+              // Trigger download
+              link.click()
+              
+              // Clean up
+              setTimeout(() => {
+                document.body.removeChild(link)
+                URL.revokeObjectURL(blobUrl)
+              }, 100)
+            })
+            .catch(error => {
+              console.warn('Download failed, trying direct link:', error)
+              // Fallback to direct link
+              link.href = memberCardUrl
+              const filename = `${firstName}_${lastName}_MemberCard.png`
+              link.download = filename
+              link.target = '_blank'
+              link.rel = 'noopener noreferrer'
+              
+              // Add to DOM temporarily
+              link.style.display = 'none'
+              document.body.appendChild(link)
+              
+              // Trigger download
+              link.click()
+              
+              // Clean up
+              setTimeout(() => {
+                document.body.removeChild(link)
+              }, 100)
+            })
+          return
+        }
+        
+        const filename = `${firstName}_${lastName}_MemberCard_Encoded.png`
         link.download = filename
         link.target = '_blank'
         link.rel = 'noopener noreferrer'
-        
-        console.log('Downloading member card with filename:', filename)
-        console.log('Card contains data for:', `${firstName} ${lastName}`)
         
         // Add to DOM temporarily
         link.style.display = 'none'
@@ -746,15 +937,12 @@ export default function CreateAccountModal({ isOpen, onClose }: CreateAccountMod
           document.body.removeChild(link)
         }, 100)
         
-        // Show feedback - silent download
-        console.log('Member card downloaded successfully')
-        
-              } catch (error) {
-          console.error('Download error:', error)
-        }
-      } else {
-        console.error('No member card URL available')
+      } catch (error) {
+        console.error('Download error:', error)
+        // Show user feedback
+        alert('Download မအောင်မြင်ပါ။ ပြန်လုပ်ကြည့်ပါ။')
       }
+    }
   }
 
   // const handleFinish = () => {
@@ -952,7 +1140,7 @@ export default function CreateAccountModal({ isOpen, onClose }: CreateAccountMod
             {currentStep === 2 && 'Complete your profile'}
             {currentStep === 3 && 'Verify your email'}
             {currentStep === 4 && 'Set your PIN code'}
-            {currentStep === 5 && (isGeneratingCard ? 'ကတ်ကို ပြုလုပ်နေပါတယ်...' : 'Your Member Card')}
+            {currentStep === 5 && (isGeneratingCard ? 'Generating your card...' : 'Your Member Card')}
           </h2>
 
           {/* Step 1: Personal Information Form */}
@@ -1325,19 +1513,51 @@ export default function CreateAccountModal({ isOpen, onClose }: CreateAccountMod
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
                   onClick={handleFacebookConnect}
-                  className="w-full py-3 sm:py-4 text-sm sm:text-base bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg sm:rounded-xl transition-all flex items-center justify-center space-x-2 sm:space-x-3"
+                  disabled={facebookLoading}
+                  className={`w-full py-3 sm:py-4 text-sm sm:text-base font-semibold rounded-lg sm:rounded-xl transition-all flex items-center justify-center space-x-2 sm:space-x-3 ${
+                    facebookLoading 
+                      ? 'bg-blue-500 cursor-not-allowed opacity-70' 
+                      : 'bg-blue-600 hover:bg-blue-700 cursor-pointer'
+                  } text-white`}
                 >
-                  <svg className="w-5 h-5 sm:w-6 sm:h-6" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
-                  </svg>
-                  <span>Connect with Facebook</span>
+                  {facebookLoading ? (
+                    <>
+                      <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                      <span>Connecting...</span>
+                    </>
+                  ) : (
+                    <>
+                      <svg className="w-5 h-5 sm:w-6 sm:h-6" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
+                      </svg>
+                      <span>Connect with Facebook</span>
+                    </>
+                  )}
                 </motion.button>
               ) : (
-                <div className="flex items-center justify-center space-x-2 sm:space-x-3 py-3 sm:py-4 bg-green-600/20 border border-green-500/30 rounded-lg sm:rounded-xl text-green-400">
-                  <svg className="w-5 h-5 sm:w-6 sm:h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                  <span className="font-medium text-sm sm:text-base">Facebook Connected</span>
+                <div className="space-y-3">
+                  <div className="flex items-center justify-center space-x-2 sm:space-x-3 py-3 sm:py-4 bg-green-600/20 border border-green-500/30 rounded-lg sm:rounded-xl text-green-400">
+                    <svg className="w-5 h-5 sm:w-6 sm:h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                    <span className="font-medium text-sm sm:text-base">Facebook connected</span>
+                  </div>
+                  
+                  {facebookUser && (
+                    <div className="flex items-center justify-center space-x-3 py-2 bg-blue-600/10 border border-blue-500/20 rounded-lg">
+                      {facebookUser.picture && (
+                        <img 
+                          src={facebookUser.picture.data.url} 
+                          alt="Facebook Profile" 
+                          className="w-8 h-8 rounded-full"
+                        />
+                      )}
+                      <div className="text-left">
+                        <p className="text-white text-sm font-medium">{facebookUser.name}</p>
+                        <p className="text-white/60 text-xs">{facebookUser.email}</p>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -1419,7 +1639,7 @@ export default function CreateAccountModal({ isOpen, onClose }: CreateAccountMod
                       <svg className="w-5 h-5 sm:w-6 sm:h-6 text-white/50 mx-auto mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
                       </svg>
-                      <p className="text-white/60 text-xs">Upload your photo</p>
+                      <p className="text-white/60 text-xs sm:text-sm">Upload your personal photo</p>
                     </div>
                   )}
                 </label>
@@ -1486,29 +1706,76 @@ export default function CreateAccountModal({ isOpen, onClose }: CreateAccountMod
               <>
                 <div className="space-y-3 sm:space-y-4">
                   <div className="text-center text-white/80 text-xs sm:text-sm mb-3 sm:mb-4">Enter 4-digit verification code</div>
-                  <div className="flex justify-center space-x-2 sm:space-x-3">
+                  
+                  {/* Verification Code Inputs */}
+                  <motion.div 
+                    className="flex justify-center space-x-2 sm:space-x-3"
+                    animate={verificationError ? { x: [0, -10, 10, -10, 10, 0] } : {}}
+                    transition={{ duration: 0.5 }}
+                  >
                     {verificationCode.map((digit, index) => (
-                      <input
-                    key={index}
+                      <motion.input
+                        key={index}
                         id={`code-${index}`}
                         type="text"
                         value={digit}
                         onChange={(e) => handleVerificationCodeChange(index, e.target.value)}
-                        className="w-12 h-12 sm:w-14 sm:h-14 text-center text-lg sm:text-xl font-bold bg-white/10 border border-white/20 rounded-lg sm:rounded-xl text-white focus:outline-none focus:border-blue-400 focus:bg-white/20 transition-all"
+                        className={`w-12 h-12 sm:w-14 sm:h-14 text-center text-lg sm:text-xl font-bold rounded-lg sm:rounded-xl text-white focus:outline-none transition-all ${
+                          verificationError 
+                            ? 'bg-red-500/20 border-2 border-red-500 focus:border-red-400' 
+                            : 'bg-white/10 border border-white/20 focus:border-blue-400 focus:bg-white/20'
+                        } ${isVerifying ? 'opacity-50 cursor-not-allowed' : ''}`}
                         maxLength={1}
+                        disabled={isVerifying}
+                        animate={verificationError ? { scale: [1, 1.1, 1] } : {}}
+                        transition={{ duration: 0.3, delay: index * 0.1 }}
                       />
                     ))}
-                  </div>
+                  </motion.div>
+
+                  {/* Error Message */}
+                  {verificationError && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="text-center"
+                    >
+                      <p className="text-red-400 text-xs sm:text-sm font-medium">
+                        {verificationError}
+                      </p>
+                    </motion.div>
+                  )}
+
+                  {/* Verifying Loader */}
+                  {isVerifying && (
+                    <motion.div
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      className="text-center"
+                    >
+                      <div className="flex items-center justify-center space-x-2">
+                        <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin"></div>
+                        <span className="text-white/60 text-xs sm:text-sm">Verifying...</span>
+                      </div>
+                    </motion.div>
+                  )}
                   
+                  {/* Resend Code */}
                   <div className="text-center">
                     <p className="text-white/60 text-xs sm:text-sm">
                       Didn't receive the code?{' '}
-                      <button
-                        onClick={handleSendVerificationCode}
-                        className="text-blue-400 hover:text-blue-300 transition-colors"
-                      >
-                        Resend
-                      </button>
+                      {canResend ? (
+                        <button
+                          onClick={handleSendVerificationCode}
+                          className="text-blue-400 hover:text-blue-300 transition-colors font-medium"
+                        >
+                          Resend
+                        </button>
+                      ) : (
+                        <span className="text-white/40">
+                          Resend in {resendCountdown}s
+                        </span>
+                      )}
                     </p>
                   </div>
                 </div>
@@ -1525,9 +1792,49 @@ export default function CreateAccountModal({ isOpen, onClose }: CreateAccountMod
                   <motion.button
                     whileHover={verificationCode.every(digit => digit !== '') ? { scale: 1.02 } : {}}
                     whileTap={verificationCode.every(digit => digit !== '') ? { scale: 0.98 } : {}}
-                    onClick={() => {
+                    onClick={async () => {
                       if (verificationCode.every(digit => digit !== '')) {
-                        setCurrentStep(4)
+                        // Verify the code with backend
+                        try {
+                          const codeString = verificationCode.join('')
+                          console.log('Verifying code with email service...')
+                          
+                          const result = await apiService.verifyCode(email, codeString)
+                          
+                          if (result.success) {
+                            console.log('Email verification successful!')
+                            setCurrentStep(4) // Move to PIN step
+                          } else {
+                            console.error('Email verification failed:', result.error)
+                            
+                            // Show user-friendly error message
+                            let errorMessage = 'Verification failed. '
+                            
+                            if (result.code === 'INVALID_CODE') {
+                              errorMessage = `Invalid code. ${result.attemptsRemaining || 0} attempts remaining.`
+                            } else if (result.code === 'CODE_EXPIRED') {
+                              errorMessage = 'Code has expired. Please request a new one.'
+                              setIsCodeSent(false) // Allow resending
+                              setVerificationCode(['', '', '', '']) // Clear code
+                            } else if (result.code === 'TOO_MANY_ATTEMPTS') {
+                              errorMessage = 'Too many attempts. Please request a new code.'
+                              setIsCodeSent(false) // Allow resending
+                              setVerificationCode(['', '', '', '']) // Clear code
+                            } else if (result.code === 'ALREADY_VERIFIED') {
+                              errorMessage = 'Email already verified!'
+                              setCurrentStep(4) // Move to next step anyway
+                              return
+                            } else {
+                              errorMessage = result.message || 'Please try again.'
+                            }
+                            
+                            alert(errorMessage) // You can replace with toast notification
+                          }
+                          
+                        } catch (error) {
+                          console.error('Verification error:', error)
+                          alert('Verification failed. Please try again.')
+                        }
                       }
                     }}
                     disabled={!verificationCode.every(digit => digit !== '')}
@@ -1628,10 +1935,10 @@ export default function CreateAccountModal({ isOpen, onClose }: CreateAccountMod
                 </svg>
               </div>
               <h3 className="text-sm sm:text-base font-medium text-white mb-1 sm:mb-2">
-                {isGeneratingCard ? 'ကတ်ကို ပြုလုပ်နေပါတယ်...' : 'Account Created Successfully!'}
+                {isGeneratingCard ? 'Generating your card...' : 'Account Created Successfully!'}
               </h3>
               <p className="text-white/60 text-xs mb-3 sm:mb-4">
-                {isGeneratingCard ? 'ခေတ္တစောင့်ပေးပါ' : 'Your personalized member card is ready'}
+                {isGeneratingCard ? 'Please wait a moment' : 'Your personalized member card is ready'}
               </p>
             </div>
 

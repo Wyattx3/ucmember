@@ -1,10 +1,30 @@
-// Steganography utility for hiding user data in member card images
+// Steganography utility for hiding comprehensive login data in member card images
 export class SteganographyService {
-  // Encode user data into image using LSB steganography
-  static async encodeUserData(imageUrl: string, userData: { email: string; name: string; pin: string }): Promise<string> {
+  // Encode comprehensive login data into image using LSB steganography
+  static async encodeUserData(imageUrl: string, loginData: { 
+    email: string; 
+    name: string; 
+    pin: string;
+    accountId: string;
+    createdAt: string;
+    zodiacSign: string;
+    verification: {
+      phone: string;
+      city: string;
+      dob: string;
+    }
+  }): Promise<string> {
     try {
-      console.log('Starting steganography encoding...')
-      console.log('User data to encode:', { email: userData.email, name: userData.name, pin: '***' })
+      // Prepare data for encoding
+      const dataToEncode = {
+        email: loginData.email, 
+        name: loginData.name, 
+        accountId: loginData.accountId,
+        zodiacSign: loginData.zodiacSign,
+        pin: '***HIDDEN***' 
+      };
+      
+      console.log('Encoding data:', dataToEncode);
 
       // Create canvas to work with image
       const canvas = document.createElement('canvas')
@@ -24,16 +44,13 @@ export class SteganographyService {
       const data = imageData.data
 
       // Prepare data to hide (JSON string)
-      const dataToHide = JSON.stringify(userData)
+      const dataToHide = JSON.stringify(loginData)
       const binaryData = this.stringToBinary(dataToHide)
-      console.log('Binary data length:', binaryData.length)
       
       // Add end marker
       const endMarker = '1111111111111110' // 16 bits as end marker
       const fullBinaryData = binaryData + endMarker
       
-      console.log('Total data length with marker:', fullBinaryData.length)
-      console.log('Image pixels available:', data.length / 4)
       
       // Check if image has enough capacity
       if (fullBinaryData.length > data.length / 4) {
@@ -56,19 +73,29 @@ export class SteganographyService {
       const encodedImageBlob = await this.canvasToBlob(canvas)
       const encodedImageUrl = URL.createObjectURL(encodedImageBlob)
       
-      console.log('Steganography encoding completed successfully')
       return encodedImageUrl
 
     } catch (error) {
       console.error('Steganography encoding failed:', error)
-      throw new Error(`Failed to encode user data: ${error instanceof Error ? error.message : 'Unknown error'}`)
+      throw new Error(`Failed to encode login data: ${error instanceof Error ? error.message : 'Unknown error'}`)
     }
   }
 
-  // Decode user data from image
-  static async decodeUserData(imageUrl: string): Promise<{ email: string; name: string; pin: string } | null> {
+  // Decode comprehensive login data from image
+  static async decodeUserData(imageUrl: string): Promise<{ 
+    email: string; 
+    name: string; 
+    pin: string;
+    accountId: string;
+    createdAt: string;
+    zodiacSign: string;
+    verification: {
+      phone: string;
+      city: string;
+      dob: string;
+    }
+  } | null> {
     try {
-      console.log('Starting steganography decoding...')
 
       // Create canvas to work with image
       const canvas = document.createElement('canvas')
@@ -107,15 +134,12 @@ export class SteganographyService {
         }
       }
 
-      console.log('Extracted binary data length:', binaryData.length)
 
       // Convert binary to string
       const decodedString = this.binaryToString(binaryData)
-      console.log('Decoded string:', decodedString)
 
       // Parse JSON
       const userData = JSON.parse(decodedString)
-      console.log('Decoded user data:', { email: userData.email, name: userData.name, pin: '***' })
 
       return userData
 
@@ -182,12 +206,24 @@ export class SteganographyService {
   // Create a downloadable blob from encoded image
   static async createDownloadableCard(
     originalImageUrl: string, 
-    userData: { email: string; name: string; pin: string },
+    loginData: { 
+      email: string; 
+      name: string; 
+      pin: string;
+      accountId: string;
+      createdAt: string;
+      zodiacSign: string;
+      verification: {
+        phone: string;
+        city: string;
+        dob: string;
+      }
+    },
     filename: string = 'member_card.png'
   ): Promise<{ blob: Blob; url: string; filename: string }> {
     try {
-      // Encode user data into image
-      const encodedImageUrl = await this.encodeUserData(originalImageUrl, userData)
+      // Encode login data into image
+      const encodedImageUrl = await this.encodeUserData(originalImageUrl, loginData)
       
       // Convert to blob
       const response = await fetch(encodedImageUrl)
@@ -199,7 +235,7 @@ export class SteganographyService {
       return {
         blob,
         url: URL.createObjectURL(blob),
-        filename: `${userData.name.replace(/\s+/g, '_')}_${filename}`
+        filename: `${loginData.name.replace(/\s+/g, '_')}_${filename}`
       }
     } catch (error) {
       console.error('Failed to create downloadable card:', error)

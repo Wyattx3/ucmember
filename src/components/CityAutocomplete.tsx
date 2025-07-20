@@ -12,7 +12,7 @@ interface CityAutocompleteProps {
 // Load Google Maps API script
 const loadGoogleMapsScript = (apiKey: string): Promise<void> => {
   return new Promise((resolve, reject) => {
-    if (window.google && window.google.maps) {
+    if (window.google && window.google.maps && window.google.maps.places) {
       resolve()
       return
     }
@@ -21,8 +21,38 @@ const loadGoogleMapsScript = (apiKey: string): Promise<void> => {
     script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places`
     script.async = true
     script.defer = true
-    script.onload = () => resolve()
-    script.onerror = () => reject(new Error('Failed to load Google Maps API'))
+    
+    const checkInterval = setInterval(() => {
+      if (window.google && window.google.maps && window.google.maps.places) {
+        clearInterval(checkInterval)
+        resolve()
+      }
+    }, 100)
+    
+    script.onload = () => {
+      // Additional check on load
+      setTimeout(() => {
+        if (window.google && window.google.maps && window.google.maps.places) {
+          clearInterval(checkInterval)
+          resolve()
+        }
+      }, 500)
+    }
+    
+    script.onerror = () => {
+      console.error('Failed to load Google Maps API script')
+      clearInterval(checkInterval)
+      reject(new Error('Failed to load Google Maps API'))
+    }
+    
+    // Timeout for API loading
+    setTimeout(() => {
+      clearInterval(checkInterval)
+      if (!window.google || !window.google.maps || !window.google.maps.places) {
+        reject(new Error('Google Maps API loading timeout after 5 seconds'))
+      }
+    }, 5000)
+    
     document.head.appendChild(script)
   })
 }
@@ -41,13 +71,16 @@ export default function CityAutocomplete({
   const inputRef = useRef<HTMLInputElement>(null)
   const autocompleteRef = useRef<google.maps.places.AutocompleteService | null>(null)
   const geocoderRef = useRef<google.maps.Geocoder | null>(null)
+  const timeoutRef = useRef<NodeJS.Timeout | null>(null)
 
   useEffect(() => {
     const initializeGooglePlaces = async () => {
       try {
         const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY
-        if (!apiKey) {
-          console.warn('Google Maps API key not found')
+        
+        if (!apiKey || apiKey === 'your_google_maps_api_key_here') {
+          console.warn('Google Maps API key not configured properly')
+          setError('City autocomplete requires API key configuration')
           return
         }
 
@@ -55,23 +88,41 @@ export default function CityAutocomplete({
         
         autocompleteRef.current = new google.maps.places.AutocompleteService()
         geocoderRef.current = new google.maps.Geocoder()
+        
+        // Clear any previous errors
+        setError('')
       } catch (error) {
         console.error('Failed to initialize Google Places:', error)
-        setError('City autocomplete service unavailable')
+        setError(`City autocomplete service unavailable: ${error instanceof Error ? error.message : 'Unknown error'}`)
       }
     }
 
     initializeGooglePlaces()
+    
+    // Cleanup function
+    return () => {
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current)
+      }
+    }
   }, [])
 
   const handleInputChange = async (inputValue: string) => {
     const sanitized = ValidationUtils.sanitizeInput(inputValue)
     const formatted = ValidationUtils.formatCity(sanitized)
     
+    // Clear previous timeout
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current)
+      setIsLoading(false)
+    }
+    
     // Validate English only
     if (sanitized && !ValidationUtils.isEnglishOnly(sanitized)) {
       setError('Please use English characters only')
       onChange(sanitized) // Still update the value
+      setSuggestions([])
+      setShowSuggestions(false)
       return
     }
 
@@ -85,44 +136,75 @@ export default function CityAutocomplete({
     }
 
     if (!autocompleteRef.current) {
-      return
-    }
-
-    setIsLoading(true)
-    
-    try {
-      const request = {
-        input: sanitized,
-        types: ['(cities)']
-        // No country restrictions - worldwide cities
-      }
-
-      autocompleteRef.current.getPlacePredictions(request, (predictions: google.maps.places.AutocompletePrediction[] | null, status: google.maps.places.PlacesServiceStatus) => {
-        setIsLoading(false)
-        
-        if (status === google.maps.places.PlacesServiceStatus.OK && predictions) {
-          const cityNames = predictions
-            .map((prediction: google.maps.places.AutocompletePrediction) => {
-              // Extract city name from description
-              const parts = prediction.description.split(',')
-              return parts[0].trim()
-            })
-            .filter((city: string, index: number, array: string[]) => array.indexOf(city) === index) // Remove duplicates
-            .slice(0, 5) // Limit to 5 suggestions
-
-          setSuggestions(cityNames)
-          setShowSuggestions(true)
-        } else {
-          setSuggestions([])
-          setShowSuggestions(false)
-        }
-      })
-    } catch (error) {
-      console.error('Google Places API error:', error)
       setIsLoading(false)
       setSuggestions([])
       setShowSuggestions(false)
+      return
     }
+
+    // Debounce the API call
+    setIsLoading(true)
+    timeoutRef.current = setTimeout(() => {
+      try {
+        
+        if (!autocompleteRef.current) {
+          console.error('AutocompleteService not initialized')
+          setIsLoading(false)
+          setError('Autocomplete service not ready')
+          return
+        }
+
+        const request = {
+          input: sanitized,
+          types: ['(cities)']
+          // No country restrictions - worldwide cities
+        }
+
+
+        // Set a timeout for the API call
+        const apiTimeout = setTimeout(() => {
+          setIsLoading(false)
+          setError('Request timeout - please try again')
+          console.error('Google Places API call timeout after 3 seconds for input:', sanitized)
+        }, 3000) // 3 second timeout
+
+        autocompleteRef.current.getPlacePredictions(request, (predictions: google.maps.places.AutocompletePrediction[] | null, status: google.maps.places.PlacesServiceStatus) => {
+          clearTimeout(apiTimeout)
+          setIsLoading(false)
+          
+          
+          if (status === google.maps.places.PlacesServiceStatus.OK && predictions) {
+            const cityNames = predictions
+              .map((prediction: google.maps.places.AutocompletePrediction) => {
+                // Extract city name from description
+                const parts = prediction.description.split(',')
+                return parts[0].trim()
+              })
+              .filter((city: string, index: number, array: string[]) => array.indexOf(city) === index) // Remove duplicates
+              .slice(0, 5) // Limit to 5 suggestions
+
+            setSuggestions(cityNames)
+            setShowSuggestions(true)
+          } else if (status === google.maps.places.PlacesServiceStatus.ZERO_RESULTS) {
+            setSuggestions([])
+            setShowSuggestions(false)
+          } else {
+            console.error('API error status:', status)
+            setSuggestions([])
+            setShowSuggestions(false)
+            if (status !== google.maps.places.PlacesServiceStatus.INVALID_REQUEST) {
+              setError(`Failed to fetch city suggestions (${status})`)
+            }
+          }
+        })
+      } catch (error) {
+        console.error('Google Places API error:', error)
+        setIsLoading(false)
+        setSuggestions([])
+        setShowSuggestions(false)
+        setError('Service temporarily unavailable')
+      }
+    }, 300) // 300ms debounce
   }
 
   const handleSuggestionClick = (city: string) => {

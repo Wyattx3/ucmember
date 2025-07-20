@@ -20,7 +20,11 @@ function App() {
       try {
         // Check API health
         const health = await apiService.healthCheck()
-        setApiHealth(health)
+        setApiHealth({
+          formValidation: health.success || false,
+          memberAuth: health.success || false,
+          message: health.message || health.error || 'API status checked'
+        })
         
         // Check if user is already authenticated
         const currentUser = apiService.getCurrentUser()
@@ -29,17 +33,21 @@ function App() {
         if (currentUser && token) {
           // Verify token is still valid
           const verification = await apiService.verifyToken(token)
-          if (verification.success) {
-            setUser(currentUser)
-            console.log('User auto-login successful:', currentUser.email)
+          
+          if (verification.success && verification.user) {
+            setUser(verification.user)
           } else {
-            // Token expired, clear auth
+            // Token invalid, clear storage
             apiService.logout()
-            setUser(null)
           }
         }
       } catch (error) {
-        console.error('App initialization error:', error)
+        console.error('Failed to check API health and auth:', error)
+        setApiHealth({
+          formValidation: false,
+          memberAuth: false,
+          message: `API health check failed: ${error instanceof Error ? error.message : 'Unknown error'}`
+        })
       } finally {
         setIsLoadingHealth(false)
       }
@@ -57,13 +65,11 @@ function App() {
   const handleLoginSuccess = (userData: { email: string; name: string }) => {
     setUser(userData)
     setIsLoginModalOpen(false)
-    console.log('Login success in App:', userData)
   }
 
   const handleLogout = () => {
     apiService.logout()
     setUser(null)
-    console.log('User logged out')
   }
 
   return (
@@ -79,7 +85,10 @@ function App() {
             <span className="loading loading-spinner loading-sm"></span>
           ) : apiHealth ? (
             <div className="flex items-center space-x-2">
-              <div className={`badge ${apiHealth.formValidation && apiHealth.memberAuth ? 'badge-success' : 'badge-warning'}`}>
+              <div 
+                className={`badge ${apiHealth.formValidation && apiHealth.memberAuth ? 'badge-success' : 'badge-warning'} cursor-pointer`}
+                title={apiHealth.message}
+              >
                 {apiHealth.formValidation && apiHealth.memberAuth ? '🟢 API Healthy' : '🟡 API Issues'}
               </div>
             </div>
