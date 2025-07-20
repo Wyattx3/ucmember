@@ -290,13 +290,13 @@ export default function CreateAccountModal({ isOpen, onClose }: CreateAccountMod
         let errorMessage = 'Facebook authentication မအောင်မြင်ပါ။'
         
         if (result.error?.includes('not configured')) {
-          errorMessage = 'Facebook App configuration လိုအပ်ပါတယ်။ Administrator ကို ဆက်သွယ်ပါ။'
+          errorMessage = 'Facebook App ကို ပြင်ဆင်မထားသေးပါ။ Demo mode မှာ အလုပ်လုပ်နေပါတယ်။'
         } else if (result.error?.includes('cancelled')) {
           errorMessage = 'Facebook login ကို ပယ်ဖျက်လိုက်ပါတယ်။'
         } else if (result.error?.includes('permission')) {
           errorMessage = 'Facebook permission လိုအပ်ပါတယ်။ ပြန်လုပ်ကြည့်ပါ။'
         } else if (result.error?.includes('network') || result.error?.includes('load')) {
-          errorMessage = 'Internet connection စစ်ကြည့်ပြီး ပြန်လုပ်ကြည့်ပါ။'
+          errorMessage = 'Facebook service ရောက်ရှိမှု မရှိပါ။ ခဏနောက် ပြန်လုပ်ကြည့်ပါ။'
         }
         
         alert(errorMessage)
@@ -792,7 +792,7 @@ export default function CreateAccountModal({ isOpen, onClose }: CreateAccountMod
       let userMessage = 'Member card generation မအောင်မြင်ပါ။\n\n'
       
       if (errorMessage.includes('Failed to fetch') || errorMessage.includes('Load failed')) {
-        userMessage += 'Internet connection စစ်ကြည့်ပြီး ပြန်လုပ်ကြည့်ပါ။'
+        userMessage += 'Service connection ပြဿနာ။ ခဏနောက် ပြန်လုပ်ကြည့်ပါ။'
       } else if (errorMessage.includes('API authentication')) {
         userMessage += 'API authentication ပြဿနာ။ Administrator ကို contact လုပ်ပါ။'
       } else if (errorMessage.includes('Brand template')) {
